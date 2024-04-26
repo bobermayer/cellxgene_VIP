@@ -59,7 +59,7 @@ def route(data,appConfig):
   #ppr.pprint(data)
   try:
     getLock(jobLock)
-    setTimeStamp(data)
+    #setTimeStamp(data)
     taskRes = distributeTask(data["method"])(data)
     freeLock(jobLock)
     gc.collect()

@@ -1,217 +1,54 @@
-ARG PYTHON__V=3.8
+FROM continuumio/miniconda3
+LABEL maintainer="Yousef Alayoubi <yousef.alayoubi@mpi-bn.mpg.de>"
 
-FROM mambaorg/micromamba:1.5.6-bookworm-slim as base
+RUN \
+    # Fetch additional libraries
+    apt-get update -y && apt-get install -y cpio libcairo2-dev libharfbuzz-dev libfribidi-dev libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev \ 
+    # Clean cache
+    && apt-get clean
 
-USER root
+RUN git clone https://github.com/interactivereport/cellxgene_VIP.git
 
-ENV LC_ALL=C.UTF-8
-ENV LANG=C.UTF-8
+# Move into cellxgene_VIP directory
+WORKDIR cellxgene_VIP
 
-ARG PYTHON__V
-
-# ------------------------------------------------------------------------------
-FROM base AS builder
-
-ENV LLVM_CONFIG=/usr/lib/llvm14/bin/llvm-config
-
-# Build dependencies
-RUN apt-get update                       && \
-    apt-get -y install bash              && \
-    apt-get -y install build-essential   && \
-    apt-get -y install jq                && \
-    apt-get -y install git               && \
-    apt-get -y install libhdf5-dev       && \
-    apt-get -y install python3-pkgconfig && \
-    apt-get -y install python3-dev       && \
-    apt-get -y install python3-pip       && \
-    apt-get -y install python3-wheel     && \
-    apt-get -y install llvm-dev          && \
-    apt-get -y install libblas-dev       && \
-    apt-get -y install cpio
-
-WORKDIR /
-RUN mkdir cellxgene cellxgene_VIP
-
-# Copies a single commit: lighter and fixes the version
-WORKDIR /cellxgene_VIP
-RUN git init && \
-    git remote add origin https://github.com/bobermayer/cellxgene_VIP.git  && \
-    git fetch --depth 1 origin master && \
-    git checkout FETCH_HEAD
-
-WORKDIR /cellxgene
-RUN git init && \
-    git remote add origin https://github.com/chanzuckerberg/cellxgene.git  && \
-    git fetch --depth 1 origin ffcf6eb5d842972f2562c359cc2276a0fbbe77d5 && \
-    git checkout FETCH_HEAD
-
-# Applying cellxgene fixes:
-#  - Upgrade: Flask, boto, s3fs, fssepec, numpy 
-#  - limit Werkzeug version as new update (3.0.0) breaks server
-#  - np.bool deprecated since numpy 1.20 -> replace by bool
-#  - Replace Flask.json.JSONEncoder by json.JSONEncoder in utils.py
-#  - Sets (s3) region name to false in default_config.py
-#  - Add --legacy-peer-deps and --openssl-legacy-provider flags to npm commands in makefiles
-#  - Extra Makefile entry to build a wheel
-RUN cp ./environment.default.json /environment.default.json
-RUN sed -i 's/np.bool/bool/g'                      server/data_common/data_adaptor.py    && \
-    printf "\nWerkzeug<=2.3.7"              >>     server/requirements.txt               && \
-    sed -i '/^boto3>/ s/=.*/=1.27.47/'             server/requirements.txt               && \
-    sed -i '/^anndata/ s/==.*$/==0.9.2/'           server/requirements.txt               && \
-    sed -i '/^Flask>/ s/,.*$/,<3.0.0/'             server/requirements.txt               && \
-    sed -i '/^numpy>/ s/=.*$/=1.24.4/'             server/requirements.txt               && \
-    sed -i '/^fsspec>/ s/,.*$//'                   server/requirements.txt               && \
-    sed -i '/^s3fs==/ s/==.*$/==2023.9.0/'         server/requirements.txt               && \
-    sed -i '10s/^/from json import JSONEncoder\n/' server/common/utils/utils.py          && \
-    sed -i 's/json.JSONEncoder/JSONEncoder/g'      server/common/utils/utils.py          && \
-    sed -i '/region_name/ s/:.*$/: false/'         server/default_config.py              && \
-    sed -i 's/npm ci/npm ci --legacy-peer-deps/'   client/Makefile                       && \
-    sed -i '6s/^/WHEELBUILD := $(BUILDDIR)\/lib\/server\n/' Makefile                     && \
-    printf '\n\
-build_wheel: build                                                                       \n\
-	$(call copy_client_assets,$(CLIENTBUILD),$(WHEELBUILD))                              \n\
-pywheel:                                                                                 \n\
-	NODE_OPTIONS=--openssl-legacy-provider $(MAKE) build_wheel                           \n\
-	python3 setup.py bdist_wheel -d wheel\n' >> Makefile
-
-RUN cp /cellxgene_VIP/index_template.insert ./index_template.insert
-
-# Patch from cellxgene_VIP/config.sh: update cellxgene client source code for VIP
-RUN echo -e "\nwindow.store = store;" >> client/src/reducers/index.js && \
-    sed -i "s|<div id=\"root\"></div>|$(sed -e 's/[&\\/]/\\&/g; s/|/\\|/g; s/$/\\/;' -e '$s/\\$//' index_template.insert)\n&|" client/index_template.html && \
-    sed -i "s|logoRelatedPadding = 50|logoRelatedPadding = 60|" client/src/components/leftSidebar/index.js && \
-    sed -i "s|title=\"cellxgene\"|title=\"cellxgene VIP\"|" client/src/components/app.js && \
-    sed -i "s|const *scaleMax *= *[0-9\.]\+|const scaleMax = 50000|; s|const *scaleMin *= *[0-9\.]\+|const scaleMin = 0.1|; s|const *panBound *= *[0-9\.]\+|const panBound = 80|" client/src/util/camera.js && \
-printf '\n\
-from server.app.VIPInterface import route\n\
-@webbp.route("/VIP", methods=["POST"])\n\
-def VIP():\n\
-    return route(request.data, current_app.app_config)\n' >> server/app/app.py && \
-    sed -i '/^-e/d' ./client/src/reducers/index.js
-##
-
-# Build cellxgene wheel in node env for next stage
-RUN micromamba create -yn node18 'nodejs>=18,<19' -c conda-forge && \
-    micromamba run -n "node18" \
-        make pywheel
-
-# ------------------------------------------------------------------------------
-FROM base AS final
-
-ARG PYTHON__V
-
-# Get wheel and VIP sources
-COPY --from=builder /cellxgene/wheel/cellxgene*.whl /
-COPY --from=builder /cellxgene_VIP /cellxgene_VIP
-COPY --from=builder /cellxgene/test/decode_fbs.py /cellxgene/test/decode_fbs.py
-
-# Conda runs with bash
+# Switch to bash terminal to run "conda" commands
 SHELL ["/bin/bash", "-c"]
 
-WORKDIR /tmp
+RUN source /opt/conda/etc/profile.d/conda.sh && \
+    conda config --set channel_priority flexible && \
+    # Create and activate conda envirnment
+    conda env create -n VIP --file VIP_conda_R.yml && \
+    conda clean -afy && \
+    conda activate VIP && \
+    # Install VIP plugin
+    ./config.sh && \
+	  export LIBARROW_MINIMAL=false && \
+    # Install R Packages and dependencies
+    conda install -y -c conda-forge r-curl curl libcurl r-ragg && \
+    R -q -e 'if(!require(devtools)) install.packages("devtools",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(Cairo)) devtools::install_version("Cairo",version="1.5-12",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(foreign)) devtools::install_version("foreign",version="0.8-76",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(ggpubr)) devtools::install_version("ggpubr",version="0.3.0",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(ggrastr)) devtools::install_version("ggrastr",version="0.1.9",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(arrow)) devtools::install_version("arrow",version="2.0.0",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(Seurat)) devtools::install_version("Seurat",version="3.2.3",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(rmarkdown)) devtools::install_version("rmarkdown",version="2.5",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(tidyverse)) devtools::install_version("tidyverse",version="1.3.0",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(viridis)) devtools::install_version("viridis",version="0.5.1",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(hexbin)) devtools::install_version("hexbin",version="1.28.2",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(ggforce)) devtools::install_version("ggforce",version="0.3.3",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(Rcpproll)) devtools::install_version("RcppRoll",version="0.3.0",repos = "http://cran.r-project.org")' && \
+    R -q -e 'if(!require(fastmatch)) devtools::install_version("fastmatch",version="1.1-3",repos = "http://cran.r-project.org")' && \
+    R -q -e 'if(!require(Biocmanager)) devtools::install_version("BiocManager",version="1.30.10",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(fgsea)) BiocManager::install("fgsea")' && \
+    R -q -e 'if(!require(rtracklayer)) BiocManager::install("rtracklayer")' && \
+    # Update anndata to 0.8.0
+    pip install anndata==0.8.0 && \
+    # Remove unused packages
+    conda clean -afy
 
-# Get env file
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends wget && \
-    wget https://gist.githubusercontent.com/Neah-Ko/d260316d77a42c5e7a698a766d8404a0/raw/62319545f0a6410cf158feaa79ad14ab044d8967/VIP_cnag.yml
+ENV PATH /opt/conda/envs/VIP/bin:$PATH
+ENV CONDA_DEFAULT_ENV VIP
 
-# Create env and install cellxgene and ipykernel in it
-RUN micromamba env create -p /env -y --file VIP_cnag.yml                     && \
-    eval "$(micromamba shell hook --shell bash)"                             && \
-    micromamba activate -p /env                                              && \
-    python3 -m ipykernel install --display-name "Python (/env)" --sys-prefix && \
-    python3 -m pip install --no-deps /cellxgene*.whl
-
-ENV PYTHONPATH=/env/lib/python${PYTHON__V}/site-packages
-ENV APPPATH=${PYTHONPATH}/server/app
-
-# Patch from cellxgene_VIP/update.VIPInterface.sh
-WORKDIR /cellxgene_VIP
-RUN mkdir ${APPPATH}/gsea && \
-    sed -i "s|MAX_LAYOUTS *= *[0-9]\+|MAX_LAYOUTS = 300|" ${PYTHONPATH}/server/common/constants.py && \
-    # To display notebook results:
-    sed -i 's|      $("#CLIresize").html(filteredRes);|      $("#CLIresize").html(filteredRes + res);|' ./interface.html && \
-    cp ./interface.html ${PYTHONPATH}/server/common/web/static/ && \
-    cp ./gsea/*.gmt                      ${APPPATH}/gsea/ && \
-    cp ./VIPInterface.py                 ${APPPATH} && \
-    cp ./fgsea.R                         ${APPPATH} && \
-    cp ./complexHeatmap.R                ${APPPATH} && \
-    cp ./volcano.R                       ${APPPATH} && \
-    cp ./Density2D.R                     ${APPPATH} && \
-    cp ./bubbleMap.R                     ${APPPATH} && \
-    cp ./bubbleMap.R                     ${APPPATH} && \
-    cp ./violin.R                        ${APPPATH} && \
-    cp ./volcano.R                       ${APPPATH} && \
-    cp ./browserPlot.R                   ${APPPATH} && \
-    cp ./complexHeatmap.R                ${APPPATH} && \
-    cp ./proteinatlas_protein_class.csv  ${APPPATH} && \
-    cp ./complex_vlnplot_multiple.R      ${APPPATH} && \
-    cp /cellxgene/test/decode_fbs.py     ${APPPATH}
-##
-
-# Some R packages need to be installed from sources
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends libfreetype6-dev libharfbuzz-dev libfribidi-dev libpng-dev libtiff5-dev libjpeg-dev xfonts-base && \
-    ln -s /usr/include/freetype2/freetype /env/include/freetype && \
-    ln -s /usr/include/freetype2/ft2build.h /env/include/ft2build.h && \
-    eval "$(micromamba shell hook --shell bash)" && \
-    micromamba activate -p /env && \
-    R -q -e 'if(!require(ggrastr)) \
-       devtools::install_version("ggrastr", version="0.2.1", upgrade=FALSE, repos = c("https://packagemanager.posit.co/cran/__linux__/bookworm/latest/", "http://cran.us.r-project.org"))' && \
-    R -q -e 'if(!require(hexbin)) \
-       devtools::install_version("hexbin", version="1.28.2", upgrade=FALSE, repos = c("https://packagemanager.posit.co/cran/__linux__/bookworm/latest/", "http://cran.us.r-project.org"))' && \
-    R -q -e 'if(!require(dbplyr)) \
-        devtools::install_version("dbplyr", version="1.0.2", upgrade=FALSE, repos = c("https://packagemanager.posit.co/cran/__linux__/bookworm/latest/", "http://cran.us.r-project.org"))' && \
-    apt-get remove -y libfreetype6-dev libharfbuzz-dev libfribidi-dev libpng-dev libtiff5-dev libjpeg-dev && \
-    apt-get -y autoremove && \
-    micromamba clean --all --yes
-
-# Clean env from now unecessary stuff
-RUN find /env -name '*.a'                                             | xargs rm -rf && \
-    find /env -type d -name '__pycache__'                             | xargs rm -rf && \
-    find /env -type d -name 'tests' -not -path *site-packages/tables* | xargs rm -rf && \
-    find /env -name 'x86_64-conda*'                                   | xargs rm -rf && \
-    rm -rf /env/share/doc /env/share/gtk-doc /env/conda-meta /env/compiler_compat    && \
-    rm -rf /env/etc/conda /env/lib/gcc /env/lib/cmake /env/lib/ldscripts
-
-# ------------------------------------------------------------------------------
-# Needs a shell
-FROM debian:bookworm-slim
-
-ARG PYTHON__V
-
-# Keep only the env & drop intermediate layers
-COPY --from=final /env /env
-
-# Set syspaths
-ENV PYTHONPATH=/env/lib/python${PYTHON__V}/site-packages
-ENV PATH /env/bin:$PATH
-
-# Needed at runtime
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends xfonts-base && \
-    apt-get clean && \
-    rm -rf /var/cache/apt/* /var/cache/debconf/* /var/lib/apt/lists/*
-
-# Add user: cellxgeneuser, -> gives ownership over /data 
-ARG UID=1000
-ARG GID=1000
-RUN mkdir /data                           && \
-    addgroup --gid "${GID}" cellxgeneuser && \
-    adduser --no-create-home                 \
-            --disabled-password              \
-            --uid "${UID}" --gid "${GID}"    \
-            cellxgeneuser                 && \
-    chown -R cellxgeneuser:cellxgeneuser /data
-
-# Ensures that users have permissions over /tmp
-USER root
-RUN chmod 1777 /tmp
-
-USER cellxgeneuser
-# Sets temporary directories for (numba | matplotlib)
-ENV NUMBA_CACHE_DIR=/tmp
-ENV MPLCONFIGDIR=/tmp
-
-ENTRYPOINT ["/env/bin/cellxgene"] 
-CMD ["launch", "--help"]
+ENTRYPOINT ["cellxgene"]

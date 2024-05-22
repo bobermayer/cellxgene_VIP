@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BUILD_NO=1
+BUILD_NO=0
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 cd $DIR

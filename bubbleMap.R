@@ -9,6 +9,7 @@ if(nchar(libPath)>3){
 }
 require(tidyverse)
 require(ggpubr)
+require(ggplot2)
 options(bitmapType='cairo')
 
 strCSV = args[1]# csv [gene,tag,log2fc,pval,qval]

@@ -19,6 +19,7 @@ suppressMessages(suppressWarnings(loadPackages()))
 options(bitmapType='cairo')
 
 violinPlot <- function(X,cutoff=0,dotsize=0.5){
+  require(ggplot2)
   #X[cells,(gene.name,grouping,subgrouping)]
   gene.name <- colnames(X)[1]
   colnames(X)[1] <- 'count'

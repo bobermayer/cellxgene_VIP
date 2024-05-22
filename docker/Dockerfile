@@ -7,10 +7,10 @@ RUN \
     # Clean cache
     && apt-get clean
 
-RUN git clone https://github.com/interactivereport/cellxgene_VIP.git
+RUN git clone https://github.com/bobermayer/cellxgene_vip.git
 
 # Move into cellxgene_VIP directory
-WORKDIR cellxgene_VIP
+WORKDIR cellxgene_vip
 
 # Switch to bash terminal to run "conda" commands
 SHELL ["/bin/bash", "-c"]
@@ -29,6 +29,7 @@ RUN source /opt/conda/etc/profile.d/conda.sh && \
     R -q -e 'if(!require(devtools)) install.packages("devtools",repos = "http://cran.us.r-project.org")' && \
     R -q -e 'if(!require(Cairo)) devtools::install_version("Cairo",version="1.5-12",repos = "http://cran.us.r-project.org")' && \
     R -q -e 'if(!require(foreign)) devtools::install_version("foreign",version="0.8-76",repos = "http://cran.us.r-project.org")' && \
+    R -q -e 'if(!require(ggplot2)) devtools::install_version("ggplot2",version="3.3.1",repos = "http://cran.us.r-project.org")' && \
     R -q -e 'if(!require(ggpubr)) devtools::install_version("ggpubr",version="0.3.0",repos = "http://cran.us.r-project.org")' && \
     R -q -e 'if(!require(ggrastr)) devtools::install_version("ggrastr",version="0.1.9",repos = "http://cran.us.r-project.org")' && \
     R -q -e 'if(!require(arrow)) devtools::install_version("arrow",version="2.0.0",repos = "http://cran.us.r-project.org")' && \

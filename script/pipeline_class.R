@@ -18,6 +18,7 @@ suppressMessages(library(doMC))
 suppressMessages(library(biomaRt))
 suppressMessages(library(emmeans))
 suppressMessages(library(nebula))
+suppressMessages(library(ggplot2))
 
 # ---------------------
 # make helper functions
